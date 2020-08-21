@@ -49,13 +49,15 @@ temp_dict_for_distance_between_pairs = dict()
 timer_for_each_pairs = dict()
 temp_dict_for_timer_for_each_pairs = dict()
 
+#Required data to all functions
+input_size = 0
+video_path = ""
+data = np.ndarray(2)
+fs = 0
+
 #Current time condition to wait between warnings.
 time_to_wait = 0
 
-#To save latest frames from webcam/cctv
-latest_frame = None
-last_ret = None
-loc = Lock()
 
 def main(_argv):
     config = ConfigProto()
@@ -67,49 +69,33 @@ def main(_argv):
     saved_model_loaded = tf.saved_model.load(FLAGS.weights, tags=[tag_constants.SERVING])
     infer = saved_model_loaded.signatures['serving_default']
 
-   #Getting audio
+    global input_size, video_path, data, fs
+    #Getting audio
     data, fs = sf.read(FLAGS.sound_file, dtype='float32')
-
     input_size = FLAGS.size
     video_path = FLAGS.video
-    # print(video_path)
-    # print()
-    # print(f"Minimum Distance: {FLAGS.minimum_distance}")
-    # print()
+    print(video_path)
+    print()
+    print(f"Minimum Distance: {FLAGS.minimum_distance}")
+    print()
     global temp_dict_for_distance_between_pairs, temp_dict_for_timer_for_each_pairs, time_to_wait
     global latest_frame, loc, last_ret
     start = time.time()
-    flags.DEFINE_float('starting_time', start, 'time when execution starts')
     
-    good_to_run = False
+    # good_to_run = False
     good_to_write = True
-    output_video_1 = None
+    
 
     ######################################################
     # 				START THE VIDEO STREAM               #
     ######################################################
 
-    def rtsp_cam_buffer(vs):
-        global latest_frame, loc, last_ret
-        while True:
-            with loc:
-                if vs.isOpened():
-                    last_ret, latest_frame = vs.read()
-
     if video_path == "0" or video_path.startswith("rtsp"):
         try:
-            vs = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
-            frame_per_seconds = int(vs.get(cv2.CAP_PROP_FPS))
-            if frame_per_seconds == 0:
-                print("WebCam input is not right. Please try again.")
-                os.exit(0)
-            t1 = threading.Thread(target=rtsp_cam_buffer,args=(vs,),name="webcam thread")
-            t1.daemon=True
-            t1.start()
-            good_to_run = True
             good_to_write = True
+            rtsp_cam(infer)
         except:
-            good_to_run = False
+            # good_to_run = False
             good_to_write = False
             end = time.time()
             time_elapsed = int(end - FLAGS.starting_time)
@@ -118,41 +104,60 @@ def main(_argv):
         try:
             vs = CamGear(source=video_path, y_tube =True,  time_delay=1, logging=True).start() 
             frame_per_seconds = vs.framerate
-            good_to_run = True
+            # good_to_run = True
             good_to_write = True
+            work_with_video(vs, frame_per_seconds, infer)
 
         except:
-            vs = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
-            frame_per_seconds = int(vs.get(cv2.CAP_PROP_FPS))
-            if frame_per_seconds == 0:
-                print("WebCam input is not right. Please try again.")
-                os._exit(0)
-            t1 = threading.Thread(target=rtsp_cam_buffer,args=(vs,),name="webcam thread")
-            t1.daemon=True
-            t1.start()
-            good_to_run = True
             good_to_write = True
+            rtsp_cam(infer)
             
     else:	
         try:
             vs = cv2.VideoCapture(video_path)
             frame_per_seconds = int(vs.get(cv2.CAP_PROP_FPS))
-            good_to_run = True
+            # good_to_run = True
             good_to_write = True
+            work_with_video(vs, frame_per_seconds, infer)
         except:
-            good_to_run = False
+            # good_to_run = False
             good_to_write = False
             end = time.time()
             time_elapsed = int(end - FLAGS.starting_time)
             print(f"Time consumed: {time_elapsed} seconds.")
-            print("Webcam not connected.")
+            print("Could not get frames from video.")
             os._exit(0)
 
+def rtsp_cam( inf):
+    while True:
+        vs = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
+        frame_per_seconds = int(vs.get(cv2.CAP_PROP_FPS))
+        # with loc:
+        if vs.isOpened():
+            print('Camera is connected')
+            #call function
+            response = work_with_video(vs, frame_per_seconds, inf)
+            if response == False:
+                time.sleep(10)
+                continue
+            
+            # work_with_video(vs, fps)
+        else:
+            print('Camera not connected')
+            vs.release()
+            time.sleep(10)
+            continue
+            
+
+def work_with_video(vs, fps, inf):
+    global input_size, video_path, data, fs
+    global temp_dict_for_distance_between_pairs, temp_dict_for_timer_for_each_pairs, time_to_wait
+    output_video_1 = None
     start_timer = 0
     l_count = 0
     skip_count = 0
     # Loop until the end of the video stream
-    frame_to_check = int(frame_per_seconds/10)
+    frame_to_check = int(fps/5)
     fps_count = 0
 
     box_and_centroid = []
@@ -161,56 +166,28 @@ def main(_argv):
     common_close_pairs = []
     boxes_to_make_red = []
 
-    while True and good_to_run == True:	
+    while True:	
         if start_timer == 0:
             start_timer = time.time()
         if video_path == "0" or video_path.startswith("rtsp"):
             # try:
+            last_ret, latest_frame = vs.read()
             if (last_ret is not None) and (latest_frame is not None):
                 frame = latest_frame.copy()
-                print(f"Loop {l_count} is Ok. Skipped {skip_count}")
+                # print(f"Loop {l_count} is Ok. Skipped {skip_count}")
                 skip_count = 0
             else:
-                print(f"Loop {l_count} is Skipped.")
-                skip_count += 1
-                l_count += 1
-                if skip_count > 10:
-                    # print("Network Problem. Please restart the system.")
-                    # os._exit(0)
-                    distance_between_pairs.clear()
-                    timer_for_each_pairs.clear()
-                    temp_dict_for_distance_between_pairs.clear()
-                    temp_dict_for_timer_for_each_pairs.clear()
-                    time_to_wait = 0
-                    latest_frame = None
-                    last_ret = None
-                    print("Something went wrong.Restarting...")
-                    # continue
-                    
-                time.sleep(0.2)
-                continue 
-            good_to_run = True
-            good_to_write = True
-        
-
-            # except:
-            #     good_to_run = False
-            #     good_to_write = False
-            #     end = time.time()
-            #     time_elapsed = int(end - FLAGS.starting_time)
-            #     print(f"Time consumed: {time_elapsed} seconds.")
-            #     if video_path=="0":
-            #         print("WebCam stopped working.")
-            #     else:
-            #         print("IP Camera stopped working.")
-            #     os._exit(0)          
+                print("Camera is disconnected!")
+                vs.release()
+                return False
+            good_to_write = True         
         elif video_path.startswith("http"):
             try:
                 frame = vs.read()
-                good_to_run = True
+                # good_to_run = True
                 good_to_write = True
             except:
-                good_to_run = False
+                # good_to_run = False
                 good_to_write = False
                 end = time.time()
                 time_elapsed = int(end - FLAGS.starting_time)
@@ -218,105 +195,95 @@ def main(_argv):
                 print("Online video link stopped working.")
                 os._exit(0)
         else:
-            try:
-                (frame_exist, frame) = vs.read()
-                good_to_run = True
-                good_to_write = True
-            except:
-                good_to_run = False
-                good_to_write = False
-                end = time.time()
-                time_elapsed = int(end - FLAGS.starting_time)
-                print(f"Time consumed: {time_elapsed} seconds.")
-                print("Could not get frames from video.")
-                os._exit(0)
+            frame_exist, frame = vs.read()
+            # good_to_run = True
+            good_to_write = True
+
             
-        if frame is None:
-            break
+
+        if fps_count == 0 or fps_count%frame_to_check==0:
+            # event.set()
+            # good_to_run = True
+            good_to_write = True
+
+            box_and_centroid.clear()
+            close_pairs.clear()
+            flat_list.clear()
+            common_close_pairs.clear()
+            boxes_to_make_red.clear()
+            # Resize the image to the correct size
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = image_resize(frame, width = FLAGS.frame_size)
+
+            # frame_size = frame.shape[:2]
+            image_data = cv2.resize(frame, (input_size, input_size))
+            image_data = image_data / 255.
+            image_data = image_data[np.newaxis, ...].astype(np.float32)
+            # To check time consumed by each frame calculation.
+            # prev_time = time.time()
+
+            batch_data = tf.constant(image_data)
+            pred_bbox = inf(batch_data)
+            for key, value in pred_bbox.items():
+                boxes = value[:, :, 0:4]
+                pred_conf = value[:, :, 4:]
+
+            boxes, scores, classes, valid_detections = tf.image.combined_non_max_suppression(
+                boxes=tf.reshape(boxes, (tf.shape(boxes)[0], -1, 1, 4)),
+                scores=tf.reshape(
+                    pred_conf, (tf.shape(pred_conf)[0], -1, tf.shape(pred_conf)[-1])),
+                max_output_size_per_class=50,
+                max_total_size=50,
+                iou_threshold=FLAGS.iou,
+                score_threshold=FLAGS.score
+            )
+            final_boxes = boxes.numpy()
+            final_scores = scores.numpy()
+            final_classes = classes.numpy()
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            if len(boxes)>0:	
+                # Get the human detected in the frame and return the 2 points to build the bounding box  
+                array_boxes_detected = get_human_box_detection(final_boxes,final_scores[0].tolist(),final_classes[0].tolist(),frame.shape[0],frame.shape[1])
+
+                if len(array_boxes_detected)>0:
+                    # Both of our lists that will contain the centroïds coordonates and the ground points
+                    array_centroids = get_centroids(array_boxes_detected)
+                    box_and_centroid = list(zip(array_centroids,array_boxes_detected))
+
+                    # Check if 2 or more people have been detected (otherwise no need to detect)
+                    if len(array_centroids) >= 2:
+                        for i,pair in enumerate(itertools.combinations(array_centroids, r=2)):
+                            # Check if the distance between each combination of points is less than the minimum distance chosen
+                            distance_between_pair = math.sqrt( (pair[0][0] - pair[1][0])**2 + (pair[0][1] - pair[1][1])**2 )
+                            # print(distance_between_pair)	
+                            #Pairs with probability that will not maintain social distancing.
+                            if distance_between_pair <= int(FLAGS.minimum_distance)*2:
+                                #Creating new dictionary containing distances between pairs
+                                distance_between_pairs[f"pairs{i}"] = distance_between_pair
+                                #Checking and creating timer for pairs from distance_between_pairs
+                                if f"pairs{i}" not in timer_for_each_pairs.keys():
+                                    timer_for_each_pairs[f"pairs{i}"] = 0
+                                
+                            if distance_between_pair < int(FLAGS.minimum_distance):
+                                close_pairs.append(pair)
+                        
+                        for sublist in close_pairs:
+                            for item in sublist:
+                                flat_list.append(item)
+                        common_close_pairs = list(set(flat_list))
+                        # print(common_close_pairs)	
+                        for ccp in common_close_pairs:
+                            for b_and_c in box_and_centroid:
+                                if ccp == b_and_c[0]:
+                                    boxes_to_make_red.append(b_and_c[1]) 
+                        # print(boxes_to_make_red)
+                        if boxes_to_make_red:
+                            red_box(boxes_to_make_red, frame)
+                        
         else:
-            if fps_count == 0 or fps_count%frame_to_check==0:
-                # event.set()
-                good_to_run = True
-                good_to_write = True
-
-                box_and_centroid.clear()
-                close_pairs.clear()
-                flat_list.clear()
-                common_close_pairs.clear()
-                boxes_to_make_red.clear()
-                # Resize the image to the correct size
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame = image_resize(frame, width = FLAGS.frame_size)
-
-                # frame_size = frame.shape[:2]
-                image_data = cv2.resize(frame, (input_size, input_size))
-                image_data = image_data / 255.
-                image_data = image_data[np.newaxis, ...].astype(np.float32)
-                # To check time consumed by each frame calculation.
-                # prev_time = time.time()
-
-                batch_data = tf.constant(image_data)
-                pred_bbox = infer(batch_data)
-                for key, value in pred_bbox.items():
-                    boxes = value[:, :, 0:4]
-                    pred_conf = value[:, :, 4:]
-
-                boxes, scores, classes, valid_detections = tf.image.combined_non_max_suppression(
-                    boxes=tf.reshape(boxes, (tf.shape(boxes)[0], -1, 1, 4)),
-                    scores=tf.reshape(
-                        pred_conf, (tf.shape(pred_conf)[0], -1, tf.shape(pred_conf)[-1])),
-                    max_output_size_per_class=50,
-                    max_total_size=50,
-                    iou_threshold=FLAGS.iou,
-                    score_threshold=FLAGS.score
-                )
-                final_boxes = boxes.numpy()
-                final_scores = scores.numpy()
-                final_classes = classes.numpy()
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                if len(boxes)>0:	
-                    # Get the human detected in the frame and return the 2 points to build the bounding box  
-                    array_boxes_detected = get_human_box_detection(final_boxes,final_scores[0].tolist(),final_classes[0].tolist(),frame.shape[0],frame.shape[1])
-
-                    if len(array_boxes_detected)>0:
-                        # Both of our lists that will contain the centroïds coordonates and the ground points
-                        array_centroids = get_centroids(array_boxes_detected)
-                        box_and_centroid = list(zip(array_centroids,array_boxes_detected))
-
-                        # Check if 2 or more people have been detected (otherwise no need to detect)
-                        if len(array_centroids) >= 2:
-                            for i,pair in enumerate(itertools.combinations(array_centroids, r=2)):
-                                # Check if the distance between each combination of points is less than the minimum distance chosen
-                                distance_between_pair = math.sqrt( (pair[0][0] - pair[1][0])**2 + (pair[0][1] - pair[1][1])**2 )
-                                # print(distance_between_pair)	
-                                #Pairs with probability that will not maintain social distancing.
-                                if distance_between_pair <= int(FLAGS.minimum_distance)*2:
-                                    #Creating new dictionary containing distances between pairs
-                                    distance_between_pairs[f"pairs{i}"] = distance_between_pair
-                                    #Checking and creating timer for pairs from distance_between_pairs
-                                    if f"pairs{i}" not in timer_for_each_pairs.keys():
-                                        timer_for_each_pairs[f"pairs{i}"] = 0
-                                    
-                                if distance_between_pair < int(FLAGS.minimum_distance):
-                                    close_pairs.append(pair)
-                            
-                            for sublist in close_pairs:
-                                for item in sublist:
-                                    flat_list.append(item)
-                            common_close_pairs = list(set(flat_list))
-                            # print(common_close_pairs)	
-                            for ccp in common_close_pairs:
-                                for b_and_c in box_and_centroid:
-                                    if ccp == b_and_c[0]:
-                                        boxes_to_make_red.append(b_and_c[1]) 
-                            # print(boxes_to_make_red)
-                            if boxes_to_make_red:
-                                red_box(boxes_to_make_red, frame)
-                            
-            else:
-                frame = image_resize(frame, width = FLAGS.frame_size)
-                if boxes_to_make_red:
-                    red_box(boxes_to_make_red, frame)
+            frame = image_resize(frame, width = FLAGS.frame_size)
+            if boxes_to_make_red:
+                red_box(boxes_to_make_red, frame)
 
         fps_count += 1
         end_timer = time.time()
@@ -383,7 +350,7 @@ def main(_argv):
                     # print(time_to_wait)
                     # print("Playing warning here.......")
                     threading.Thread(target = play_warning, args = [data, fs]).start()
-                    threading.Thread(target= waiting_time, args=[frame_per_seconds]).start()
+                    threading.Thread(target= waiting_time, args=[fps]).start()
                     
             start_timer = 0
         l_count += 1
@@ -414,6 +381,7 @@ def main(_argv):
             # Break the loop
             if key == ord("q"):
                 break
+    return True
 
 def red_box(red_boxes, frame):
     for i,items in enumerate(red_boxes):
@@ -428,11 +396,11 @@ def play_warning(d,f):
         sd.play(d, f)
         status = sd.wait()
         # sd.stop()
-        good_to_run = True
+        # good_to_run = True
         good_to_write = True
     except:
         # eve.clear()
-        good_to_run = False
+        # good_to_run = False
         good_to_write = False
         end = time.time()
         time_elapsed = int(end - FLAGS.starting_time)
